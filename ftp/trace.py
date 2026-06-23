@@ -16,8 +16,8 @@ import numpy as np
 from rfqsim.config import SimConfig
 from rfqsim.mmpp import build_generator
 from .belief import MMPPBeliefFilter
-from .env import BondParams, generate_episode, simulate_fill
-from .pipeline import GenConfig, _build_oracle
+from .env import generate_episode, simulate_fill
+from .pipeline import GenConfig, build_oracle, make_bond
 from .rollout import OraclePolicy, RandomPolicy
 from .sector import build_sector_context
 from .serialize import N_ACTIONS, offset_of_action, quantize_offset
@@ -102,34 +102,37 @@ def _traced_episode(rng, ep, policy, oracle, cfg, gc, log_belief=True):
     return rows, {"obj_oracle": obj_orc, "obj_policy": obj_pol}
 
 
-def collect_traces(cfg: SimConfig, gc: GenConfig, policy_factory, n_cusips=20,
-                   episodes_per=4, seed=999, log_belief=True):
+def collect_traces(cfg: SimConfig, gc: GenConfig, policy_factory, n_episodes=80,
+                   seed=999, log_belief=True):
     """Roll a policy (built per-call by policy_factory(oracle, cfg) or None=random) and
-    the oracle in lockstep across held-out CUSIPs. Returns (rows, episode_objs).
+    the oracle in lockstep across held-out regime realizations of the FIXED bond.
+    Returns (rows, episode_objs).
 
     policy_factory: callable -> a policy with (step,q,t)->action. If None, uses Random.
-                    For the oracle-vs-oracle sanity, pass lambda o,c: OraclePolicy(o).
+                    For oracle-vs-oracle sanity, pass lambda o,c: OraclePolicy(o).
     """
     rng = np.random.default_rng(seed)
+    bond = make_bond(cfg, gc)
+    oracle = build_oracle(cfg, bond, gc)
+
     all_rows, ep_objs = [], []
     eid = 0
-    for _ in range(n_cusips):
-        bond = BondParams.sample(cfg, rng, gc.sector_intensity, gc.cusip_frac)
-        oracle = _build_oracle(cfg, bond, gc)
-        for _ in range(episodes_per):
-            ep = generate_episode(cfg, bond, gc.horizon_days, rng)
-            if len(ep.steps) < 2:
-                continue
-            if policy_factory is None:
-                pol = RandomPolicy(np.random.default_rng(int(rng.integers(1 << 30))))
-            else:
-                pol = policy_factory(oracle, cfg)
-            rows, objs = _traced_episode(rng, ep, pol, oracle, cfg, gc,
-                                         log_belief=log_belief)
-            for r in rows:
-                r["episode"] = eid
-            all_rows.extend(rows)
-            objs["episode"] = eid
-            ep_objs.append(objs)
-            eid += 1
+    attempts = 0
+    while eid < n_episodes and attempts < n_episodes * 4:
+        attempts += 1
+        ep = generate_episode(cfg, bond, gc.horizon_days, rng)
+        if len(ep.steps) < 2:
+            continue
+        if policy_factory is None:
+            pol = RandomPolicy(np.random.default_rng(int(rng.integers(1 << 30))))
+        else:
+            pol = policy_factory(oracle, cfg)
+        rows, objs = _traced_episode(rng, ep, pol, oracle, cfg, gc,
+                                     log_belief=log_belief)
+        for r in rows:
+            r["episode"] = eid
+        all_rows.extend(rows)
+        objs["episode"] = eid
+        ep_objs.append(objs)
+        eid += 1
     return all_rows, ep_objs

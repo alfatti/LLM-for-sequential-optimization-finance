@@ -6,8 +6,8 @@ policy(step, q, t) -> action_index signature.
                    the argmax over the 9 action-digit tokens (restricted decoding, as the
                    SFT paper does).
   ICLPolicy      : same base model WITHOUT fine-tuning, but the prompt is prefixed with a
-                   few-shot support trajectory (k oracle episodes on related CUSIPs). This
-                   is the paper's in-context-learning baseline.
+                   few-shot support trajectory (k oracle episodes = prior regime
+                   realizations on the same bond). This is the paper's ICL baseline.
 
 Both maintain the running serialized history across the episode so the model conditions on
 the same format it trained on. The rollout calls the policy once per RFQ; the policy

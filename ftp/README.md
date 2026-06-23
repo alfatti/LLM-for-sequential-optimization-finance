@@ -1,8 +1,12 @@
 # `ftp/` — Fine-Tuning an LLM to Recover the Bergault–Guéant Market-Making Oracle
 
 Tests whether a QLoRA-fine-tuned **Llama-3-8B** can recover near-optimal RFQ market-making
-behavior under the Bergault–Guéant Fair-Transfer-Price objective, on a synthetic
-single-CUSIP environment with a **censored MMPP liquidity regime** (a POMDP-in-disguise).
+behavior under the Bergault–Guéant Fair-Transfer-Price objective. Faithful to the BG setup:
+a desk that makes markets in **ONE fixed bond**, with a **censored MMPP liquidity regime**
+(a POMDP-in-disguise). The bond's parameters are fixed; the only variation across episodes
+is the **regime realization** (a fresh MMPP path each episode) — exactly what a single-CUSIP
+desk faces day to day. Generalization is to *unseen regime realizations on the same bond*,
+not to unseen bonds; the SFT "number of tasks" axis is the **number of episodes**.
 
 The oracle is the BG quadratic-approximation HJB quote map (closed-form, exact). The LLM is
 trained on oracle-labeled trajectories and benchmarked against it.
@@ -24,7 +28,7 @@ config.py (BG-calibrated params)
  rollout.py ── thread inventory, run a policy, accumulate the BG objective
         │
         ▼
- pipeline.py ─ serialize oracle rollouts → train/test JSONL (held-out CUSIPs)
+ pipeline.py ─ serialize oracle rollouts → train/test JSONL (held-out EPISODES, one bond)
         │
         ▼
  sft_data.py ─ window episodes + mask loss to ACTION tokens only
@@ -48,14 +52,15 @@ function) is the *best possible flow-only policy* — the honest ceiling for a f
 # 0. (once) point at the base model — see "Llama-3-8B artifacts" below
 export LLAMA3_8B_PATH=/abs/path/to/llama-3-8b
 
-# 1. generate SFT data (1-day episodes, ~100 RFQs each)
-python -m ftp.pipeline                     # writes /mnt/user-data/outputs/sft_data/{train,test}.jsonl
+# 1. generate SFT data (ONE fixed bond, many regime realizations; 1-day episodes ~100 RFQs)
+python -c "from ftp.pipeline import run_pipeline, GenConfig; run_pipeline(out_dir='./sft_data', gc=GenConfig())"
+# writes ./sft_data/{train,test}.jsonl + manifest.json (manifest records the fixed bond's params)
 
 # 2. QLoRA fine-tune
 python -m ftp.sft_train --data /mnt/user-data/outputs/sft_data --out ./ckpt
 
 # 3. benchmark (scalar gap decomposition)
-python -m ftp.evaluate --adapter ./ckpt/final --with_icl
+python -m ftp.evaluate --adapter ./ckpt/final --data ./sft_data --with_icl --n_episodes 120
 
 # 4. full outcome analysis → open outcome_analysis.ipynb, set HAVE_LLM=True, run
 ```
@@ -193,6 +198,10 @@ beyond the defaults.
 
 ## Reading the result honestly
 
+Because this is a **single-CUSIP desk**, the bond is fixed and the experiment asks: can the
+LLM learn to quote *this bond* near-optimally across the regimes it encounters? The held-out
+test set is fresh regime realizations on the same bond.
+
 The agent is **flow-only** (it never sees the regime). So is the belief-optimal policy. The
 honest headline is therefore *"the SFT LLM closes X% of the **closable** (belief-optimal)
 band,"* not *"X% of the full oracle gap"* — because the full-info oracle's information is not
@@ -210,5 +219,12 @@ whether the LLM learned *inference* (correct when the regime is identifiable) vs
   inventory a live signal.)
 - `GenConfig.sector_halflife` — sector-flow observation window = the regime-inference fidelity
   knob (the analogue of the SFT paper's observation quality `q`).
-- `GenConfig.{n_train_cusips, episodes_per_cusip}` — scale toward the paper's training-task axis.
+- `GenConfig.{n_train_episodes, n_test_episodes}` — the task axis = number of distinct
+  **regime realizations** (episodes) on the fixed bond. Scale `n_train_episodes` toward the
+  paper's training-task sweep. Train/test split is on episodes (unseen MMPP paths).
+- `GenConfig.bond_seed` (default **8**) — identifies THE fixed bond. Seed 8 gives κ≈0.33 and a
+  belief-optimal gap ≈0.72 (the regime genuinely drives the optimal quote → a healthy closable
+  band). Other seeds can give κ≈0 (regime irrelevant, gap≈0, nothing to learn) or very high κ
+  (regime hard to infer, belief policy worse than random). **Pin a bond with a healthy band.**
+  You can also pin parameters directly via `bond_{base_price,spread,kappa,sigma}`.
 ```
