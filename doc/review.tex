@@ -1,1 +1,363 @@
+\documentclass[11pt]{article}
 
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{titlesec}
+\usepackage[expansion=false]{microtype}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  urlcolor=blue!60!black,
+  citecolor=black
+}
+
+\titleformat{\section}{\large\bfseries}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{0.6em}{}
+
+\newcommand{\Qhat}{\widehat{Q}}
+\newcommand{\Eb}{\mathbb{E}}
+\newcommand{\Rb}{\mathbb{R}}
+\newcommand{\Lam}{\Lambda}
+\newcommand{\Ktest}{K_{\mathrm{test}}}
+\newcommand{\Con}{C_{\mathrm{on}}}
+\newcommand{\epsQ}{\varepsilon_Q}
+
+\newtheorem*{remark}{Remark}
+
+\title{\bfseries Methodology Review\\[0.3em]
+\large \emph{Large Language Models for Sequential Decision-Making:\\
+Improving In-Context Learning via Supervised Fine-Tuning}\\[0.4em]
+\normalsize Zhang, Aghaei \& Saghafian (arXiv:2605.09009v1)}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-2.5em}
+
+\section{Summary of the contribution}
+
+The paper proposes a supervised fine-tuning (SFT) recipe for endowing a pretrained,
+open-source LLM (Llama-2-7B) with in-context sequential decision-making ability. The
+pipeline is: (i) sample tasks $\tau$ from a task distribution $\mathcal{T}$; (ii) compute
+a (near-)optimal oracle policy per task via backward induction; (iii) roll out
+demonstration trajectories under that oracle; (iv) serialize trajectories into strings and
+fine-tune via QLoRA on a next-token loss; (v) at test time present a few oracle support
+trajectories in-context on \emph{held-out} tasks and act greedily on the model's predicted
+action token. Three environment classes are studied---MDP (full observability), POMDP
+(partial observability), APOMDP (model ambiguity via an $\alpha$-MEU robust criterion).
+The headline empirical finding is that SFT roughly halves the optimality gap relative to
+ICL-only and far exceeds a random floor, with the largest gains in long-horizon, low-fidelity,
+and ambiguous regimes. A theoretical section interprets a single linear self-attention (LSA)
+layer as an implicit in-context ridge-like estimator of the optimal $Q$-function in linear
+MDPs and lifts a per-query prediction bound to an end-to-end policy suboptimality bound.
+
+The work is competently executed and the writing is clear. This review concentrates on
+methodological soundness rather than novelty, and is organized around (1) the
+experimental design, (2) the evaluation protocol and statistics, (3) the theory--experiment
+linkage, (4) the baselines, and (5) reproducibility. I flag concerns by severity throughout.
+
+\section{Experimental design}
+
+\subsection{Task generation and the train/test split}
+
+The MDP is a $10$-state ($E=9$) ``energy-management'' chain with three actions, two of which
+($a=0,a=2$) are deliberately redundant charge actions. Tasks differ only in a single scalar
+transition probability $p\in[0.5,1)$ sampled uniformly; the POMDP adds an emission fidelity
+$q\in\{0.5,0.8,1.0\}$; the APOMDP adds a KL-ball ambiguity set of size $|\mathcal{M}_\tau|\in\{1,3,5\}$.
+
+\paragraph{Concern (moderate): the task family is very low-dimensional.} Across draws, an
+MDP ``task'' is fully determined by one number $p$ on a bounded interval, with all other
+structure (state count, reward shape $r=s/E$, action semantics, cost $c=-0.02$) held fixed.
+This is a thin notion of ``generalization across tasks.'' A model that simply learns the
+single induced policy family parameterized by $p$ can score well without any genuine
+in-context task identification. The duplicated-action device is described as making ``action
+selection harder,'' but it inflates the action space without adding decision-relevant
+structure; it tests label disambiguation, not planning. The paper would be substantially
+stronger with at least one task axis that varies reward structure or topology, so that the
+few-shot context must actually \emph{identify} the task rather than index a one-parameter
+sweep. As written, it is hard to distinguish in-context task inference from amortized
+memorization of a one-dimensional policy manifold.
+
+\paragraph{Concern (moderate): the split is over task realizations, not over structure.}
+Train and test tasks are drawn from the same $\mathcal{T}$ with the same generative form;
+``held-out'' means a fresh $p$ (or $q$, or ambiguity seed), not a held-out region of task
+space. This is a legitimate i.i.d.\ generalization test but a weak one, and it should not be
+read as evidence of compositional or structural transfer. The OOD experiments
+(\S F.2) partially address this---testing $p\in[0.3,0.5)$, off-grid $q$, off-$\alpha$---and
+are the most informative robustness evidence in the paper. However, the authors themselves
+note the MDP OOD region is plausibly \emph{easier} (smaller $p$ $\Rightarrow$ less frequent
+state change), which means the near-zero OOD gap is weak evidence of robustness rather than
+strong evidence; an OOD direction known to be \emph{harder} would be more probative.
+
+\subsection{The oracle and the ``optimal'' label}
+
+For APOMDPs the supervision target is the $\alpha$-MEU robust-backward-induction policy.
+
+\paragraph{Concern (moderate): ``optimal'' is overloaded, and the APOMDP optimality gap is
+self-referential.} The optimality gap (Eq.\ 11) normalizes by $\mathrm{OPT}_\tau$, the reward
+``under the optimal policy.'' In the APOMDP case the ``optimal'' policy is itself the
+$\alpha$-MEU oracle the model was trained to imitate, evaluated under the same nominal
+model used to construct it. The gap therefore measures \emph{imitation fidelity to the
+$\alpha$-MEU oracle}, not optimality against the true (possibly mis-specified) data-generating
+process. This is defensible as a behavioral-cloning metric but the paper's framing
+(``handle model ambiguity'') suggests a robustness claim it does not actually test: there is
+no evaluation under a genuinely adversarial or held-out member of the ambiguity set, which
+is the entire point of robust control. The $\alpha=1$ result (larger $|\mathcal{M}|$
+$\Rightarrow$ larger gap) is consistent with the oracle being harder to imitate, not
+necessarily with the LLM being more or less robust.
+
+\paragraph{Strength.} Using a model-based oracle as the supervision signal is the right call
+for a synthetic study and is honestly flagged as a limitation (\S G) for real domains where
+no oracle exists. The motivation---offline, oracle-labeled data in healthcare---is coherent.
+
+\subsection{Serialization and the action-token decoding rule}
+
+Trajectories are serialized as \texttt{<O\_t> 3, <A\_t> 1, <R\_t> 0.33, \dots} and the model
+acts by restricting outputs to action tokens and taking the argmax.
+
+\paragraph{Concern (minor but consequential): tokenization of numeric fields is unexamined.}
+Rewards such as $0.33$ and multi-digit observations are fed as raw decimal strings to a
+BPE tokenizer that was never designed for numeric regularity. How $0.33$ vs.\ $0.44$ tokenize,
+and whether the model can read the reward channel at all, materially affects what ``in-context
+learning'' is even possible here. None of this is ablated. Since the central claim is that the
+context carries task information, the encoding of that context is a first-order design choice,
+not an implementation detail. A digit-level or fixed-precision encoding ablation would close
+this gap.
+
+\paragraph{Concern (minor): greedy argmax over action tokens collapses the policy.} Restricting
+to the single highest-probability action token discards the distributional output the loss
+trained. For stochastic-optimal settings (and the POMDP belief-optimal action can be
+genuinely mixed) this biases evaluation. The choice is reasonable for reproducibility but its
+effect is unquantified.
+
+\section{Evaluation protocol and statistics}
+
+\subsection{Metric definition}
+
+The optimality gap (Eq.\ 11) is a \emph{ratio} $\frac{\mathrm{OPT}_\tau - \mathrm{OPT}^{\mathrm{Eval}}_\tau}{\mathrm{OPT}_\tau}$ averaged over test tasks.
+
+\paragraph{Concern (moderate): the normalization is fragile and possibly sign-ambiguous.}
+Rewards here include a per-step cost $c=-0.02$ and a work reward $r=s/E\in[0,1]$. Cumulative
+$\mathrm{OPT}_\tau$ can be small or, for charge-heavy optimal policies under some $p$, even
+negative. Dividing by a near-zero or negative denominator makes the per-task ratio unstable
+and the cross-task average ill-behaved; a single task with $\mathrm{OPT}_\tau\approx 0$ can
+dominate. The paper reports clean percentages, so either denominators are comfortably bounded
+away from zero in practice or outliers are being absorbed silently. This needs to be stated.
+A more robust metric is a \emph{regret} (un-normalized reward difference) or a normalization
+by $(\mathrm{OPT}_\tau - \mathrm{RANDOM}_\tau)$, which bounds the gap in $[0,1]$ and is
+standard. The random ``floor'' is already computed, so this is cheap.
+
+\paragraph{Concern (minor): the floor is reported inconsistently.} The MDP random policy gaps
+(57.6\%, 49.6\%, 46.4\%) are well below the $100\%$ a normalized-to-random metric would give,
+confirming the metric is gap-to-optimal-over-optimal, not gap-to-optimal-over-range. That is
+fine, but it means ``SFT halves the gap'' is a statement about an unbounded-below quantity and
+its magnitude is not directly comparable across $T$ or across settings with different reward
+scales. Comparisons such as ``$15\%$ at $T=10$ vs.\ $15\%$ at $T=15$'' should not be read as
+equal difficulty.
+
+\subsection{Confidence intervals and multiplicity}
+
+CIs are two-sided Student-$t$ over the $N_{\mathrm{eval}}=100$ test tasks.
+
+\paragraph{Concern (moderate): the variance structure is mis-specified.} Each test-task mean
+is itself averaged over 30 (MDP/POMDP) or 90 (APOMDP) evaluation rollouts. Treating the 100
+per-task means as the only source of variance, with a $t$-interval over tasks, ignores the
+within-task Monte Carlo variance and the fact that all curves are computed on the \emph{same}
+100 test tasks across the $x$-axis sweep (number of training tasks). The latter induces strong
+positive correlation along each curve; the apparent smoothness and the overlap/separation of
+shaded bands are therefore not independent evidence point-to-point. A hierarchical / clustered
+variance estimate, or at minimum paired comparisons (same test tasks, SFT vs.\ ICL vs.\ DPT),
+would be the correct treatment. Paired tests would also tighten the SFT-vs-DPT comparison,
+which is currently eyeballed from overlapping bars.
+
+\paragraph{Concern (minor): no correction for the many simultaneous comparisons.} Dozens of
+curves and bar groups are compared across $T$, $q$, $\alpha$, $|\mathcal{M}|$, and training-set
+size with $95\%$ CIs read individually. No family-wise or FDR control is mentioned. With this
+many contrasts some ``separations'' are expected by chance.
+
+\subsection{Single-seed / single-run ambiguity}
+
+\paragraph{Concern (moderate): fine-tuning stochasticity is not propagated.} It is not stated
+whether each reported point is one QLoRA run or an average over fine-tuning seeds. Given
+QLoRA's sensitivity to seed, init, and data order, and the multi-day cost acknowledged in
+\S C, it is likely a single run per configuration. If so, the CIs capture
+\emph{test-task} sampling variance but \emph{not} training variance---arguably the larger
+source for an 7B model on a few hundred tasks. The non-monotonicities visible in several
+curves (e.g.\ POMDP $q=0.5$ crossing in Fig.\ 2 right, APOMDP wiggles in Fig.\ 3) are
+consistent with run-to-run noise that the CIs do not represent.
+
+\section{Theory and its linkage to the experiments}
+
+The theory (\S4, \S E) is a clean restatement of Zhang--Frei--Bartlett (ref.\ [8]) in
+$Q$-learning notation: a single LSA layer trained by gradient flow on a population MSE
+converges to the closed-form in-context estimator
+$\Qhat(x_q\mid P)=x_q^\top \Gamma^{-1}\!\big(\tfrac1M\sum_i y_i x_i\big)$ with
+$\Gamma=(1+\tfrac1N)\Lam+\tfrac{\mathrm{tr}\Lam}{N}I_d$, yielding a prediction-error bound (Eq.\ 6)
+that the authors lift to an end-to-end policy gap (Prop.\ 1) via a finite-horizon
+performance-difference identity and an on-policy calibration constant $\Con$.
+
+\paragraph{Strength.} The decomposition into a $1/M$ in-context estimation term and a $1/N^2$
+training-length bias is genuinely useful intuition, and the sample-complexity corollary
+(Prop.\ 2: $\Ktest=O(\Con T d^2/\varepsilon^2)$, $K=O(\sqrt{\Con}\,d^{3/2}/\varepsilon)$)
+gives a crisp, falsifiable qualitative prediction---support trajectories scale as
+$1/\varepsilon^2$, training trajectories as $1/\varepsilon$. The numerical validation in \S E.2
+(Fig.\ 4) of the simulation-lemma step is the right sanity check and is convincingly below the
+bound across 63 configurations.
+
+\paragraph{Concern (major): the theory is about a different object than the experiments.} The
+gap between model and theory is wide enough that the theory is best read as
+\emph{motivation}, and the paper should say so more plainly:
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt,topsep=2pt]
+  \item \textbf{Architecture mismatch.} The theory is a \emph{single linear} self-attention
+  layer with no softmax, no MLP, no depth, no LayerNorm, trained \emph{from scratch by
+  gradient flow on population MSE}. The experiment is a 32-layer pretrained Llama-2-7B fine-tuned
+  with 4-bit QLoRA on a next-token cross-entropy loss. There is no theorem connecting the QLoRA
+  next-token objective to the LSA MSE minimizer, so Eq.\ (5) does not describe the trained model.
+  \item \textbf{Objective mismatch.} Lemma 1 governs MSE regression onto scalar $Q$-targets.
+  The model is never trained to predict $Q$-values; it is trained to predict the
+  \emph{action token} of the oracle. Action imitation and $Q$-regression coincide only under
+  assumptions (linear-realizable $Q$, argmax decoding, matched query covariance) that are not
+  established for the tabular experiments.
+  \item \textbf{Setting mismatch.} The theory requires linear-realizable $Q^*$ and a
+  \emph{fixed} feature covariance $\Lam\succ0$ across train and test prompts---an assumption the
+  authors correctly flag as load-bearing (covariate shift breaks the single-LSA estimator). The
+  experiments are tabular, with no feature map, and POMDP/APOMDP $Q$-functions that are
+  explicitly \emph{not} linear in any fixed map (\S E.4 concedes Prop.\ 1 ``does not apply
+  directly''). The $\Con$ constant absorbs exactly the on-policy covariate shift the whole
+  construction is fragile to, and it is never measured in the LLM experiments---only in the
+  synthetic LSA simulation.
+\end{itemize}
+None of these are fatal to the \emph{paper}, but the abstract's ``we interpret a fine-tuned
+attention layer as implicitly estimating optimal $Q$-functions'' overstates what is shown. A
+single \emph{pretrained-then-fine-tuned} layer is not analyzed; a fresh single LSA layer is.
+The honest claim is: ``in a stylized linear-MDP regression model, a single trained LSA layer
+implements a known in-context estimator, which motivates---but does not characterize---the
+behavior of the fine-tuned LLM.''
+
+\paragraph{Concern (moderate): the headline theoretical prediction is not tested where it
+would bite.} Prop.\ 2 predicts a sharp asymmetry between $\Ktest$ (number of few-shot support
+trajectories) and $K$ (training rollouts per task). The experiments fix evaluation at
+\emph{two} support trajectories throughout and never sweep $\Ktest$ in the main results, so
+the $1/\varepsilon^2$ vs.\ $1/\varepsilon$ distinction---the most actionable theoretical
+output---goes untested on the LLM. (\S F mentions an ``alternative few-shot demonstration
+analysis,'' but the support-count scaling that the theory predicts is not shown in the
+provided material.) Conversely the training-task sweep tests $K$ but not in a way that isolates
+the $1/N^2$ bias from confounded data-diversity effects. The cleanest contribution would be a
+single LLM experiment that varies $\Ktest$ and $K$ on a grid and checks the predicted slopes.
+
+\section{Baselines}
+
+Three references (random floor; ICL-only on the same base model; DPT [11]) plus OOD and
+support-quality ablations.
+
+\paragraph{Strength.} ICL-only on the identical base model is the correct ablation to isolate
+the \emph{value of fine-tuning} from the value of the pretrained prior, and DPT is the right
+prior-art comparator for in-context RL via supervised pretraining.
+
+\paragraph{Concern (moderate): the DPT comparison is not obviously apples-to-apples on
+compute or capacity.} DPT trains a transformer from scratch; the proposed method fine-tunes a
+7B model carrying a massive pretrained prior. Outperforming DPT could reflect the pretrained
+prior, the parameter count, or the method---these are confounded. A fairer pairing would
+either (a) give DPT comparable capacity / a pretrained init, or (b) report compute-matched
+results. As stated, ``our approach beats DPT'' partly restates ``a fine-tuned 7B LLM beats a
+small from-scratch transformer,'' which is expected.
+
+\paragraph{Concern (minor): missing a behavioral-cloning-without-context baseline.} A natural
+and revealing baseline is the same QLoRA fine-tune evaluated with \emph{no} support
+trajectories in the prompt (pure parametric policy). The delta between that and the few-shot
+SFT policy is precisely the in-context contribution the paper is about, separated from the
+parametric absorption of the task family. Its absence makes it hard to tell how much of the
+test-time behavior is genuine in-context adaptation vs.\ a fixed policy memorized across the
+one-parameter family (cf.\ \S2.1).
+
+\paragraph{Strength.} The support-quality ablation (\S F.3: optimal vs.\ random few-shot
+demonstrations) is the most diagnostic experiment in the paper. The large $T=5$ gap
+($\sim$3--5\% vs.\ $\sim$20\%) is real evidence that the model \emph{uses} the context content,
+not just its format---directly countering the memorization worry above for short horizons. It
+would be even stronger if extended to the POMDP/APOMDP settings and tied to the $\Ktest$ sweep.
+
+\section{Reproducibility}
+
+\paragraph{Strength.} Hyperparameters (\S C) are reported in useful detail: QLoRA NF4 +
+bf16, rank $r=64$, $\alpha=64$, dropout $0.1$ on all attention/MLP projections, Paged AdamW
+32-bit, lr $2\times10^{-4}$ cosine with $0.05$ warmup, 3 epochs, A100-80GB, with an honest
+wall-clock and total-project-cost disclosure. Licenses are stated. Pseudocode (\S D) is
+complete enough to re-implement.
+
+\paragraph{Concern (moderate): key choices are unstated.} (i) Number of fine-tuning seeds /
+runs per point (see \S3.3 above); (ii) the exact numeric encoding / tokenizer handling of
+observations and rewards; (iii) decoding temperature and how ties / invalid tokens are handled;
+(iv) validation/early-stopping criterion beyond ``evaluate each epoch''; (v) whether the random
+and ICL baselines use the identical prompt schema. (vi) No code or data release is mentioned in
+the provided text. For a synthetic study these are all cheaply fixable and would make the
+results fully reproducible.
+
+\section{Minor and presentational points}
+
+\begin{itemize}[leftmargin=1.4em,itemsep=3pt,topsep=2pt]
+  \item \textbf{Base-model version drift.} The abstract/intro speak generically of ``pretrained
+  LLMs''; \S C pins Llama-2-7B. Given the 2026 dateline this is a conservative choice and the
+  results may not transfer to instruction-tuned or larger models---worth a sentence.
+  \item \textbf{APOMDP ambiguity construction.} The Dirichlet-perturbation + $\mathrm{KL}\le0.2$
+  entropy-ball is a reasonable but arbitrary ambiguity model; sensitivity to the $0.2$ radius is
+  not shown, yet the $\alpha\times|\mathcal{M}|$ interaction is a headline result.
+  \item \textbf{``Halves the gap.''} This phrase appears in the abstract and \S1 but the factor
+  varies by $T$ (e.g.\ $43.2\%\to15\%$ at $T=15$ is closer to a third). Precise figures already
+  in the text are stronger than the round claim.
+  \item \textbf{Figure legibility.} Several multi-panel figures (Figs.\ 2--3, 5--8) pack three
+  curves $\times$ three panels with overlapping CIs; the qualitative claims would be better
+  supported by a companion table of point estimates $\pm$ CI at the terminal training-set size.
+  \item \textbf{Darkroom (\S F.4).} Reaching $\sim$95\% of oracle on held-out goals with a
+  sparse-reward $T=100$ grid is the most impressive single result and arguably deserves
+  promotion from the appendix; note however the training mix (10 oracle + 100 random rollouts)
+  and 5-rollout evaluation differ from the main protocol, so it is not directly comparable.
+\end{itemize}
+
+\section{Overall assessment}
+
+\paragraph{What is solid.} The pipeline is sensible and clearly described; the ICL-only and
+support-quality ablations are well chosen and genuinely diagnostic; the OOD probes add value;
+reproducibility of hyperparameters is good; and the theory, taken on its own terms as a
+restatement-plus-lifting of [8], is correct and the numerical check (Fig.\ 4) is appropriate.
+The extension of the in-context-RL evaluation from MDPs to POMDPs/APOMDPs is a reasonable
+empirical contribution.
+
+\paragraph{What needs work, by severity.}
+\begin{description}[leftmargin=2em,style=nextline,itemsep=3pt,topsep=2pt]
+  \item[\textnormal{\textit{Major.}}] The theory--experiment gap (architecture, objective, and
+  setting all differ) means the theoretical section motivates rather than explains the method;
+  the framing should be softened accordingly, and the one cheap experiment that would partly
+  bridge it---an LLM sweep over $\Ktest$ and $K$ to test the predicted scaling asymmetry---is
+  absent.
+  \item[\textnormal{\textit{Moderate.}}] (a) The task family is one-dimensional, so in-context
+  task \emph{identification} is not cleanly separated from amortized memorization (no
+  no-context fine-tuned baseline). (b) The optimality-gap metric has a fragile normalization and
+  is not comparable across settings/horizons; a regret or range-normalized gap is preferable.
+  (c) The variance/CI treatment ignores within-task Monte Carlo variance, curve-wise correlation,
+  fine-tuning-seed variance, and multiplicity. (d) For APOMDPs ``optimal'' is the imitated oracle
+  itself, so robustness is asserted but not tested under held-out ambiguity-set members. (e) The
+  DPT comparison confounds method with pretrained-prior and capacity.
+  \item[\textnormal{\textit{Minor.}}] Numeric serialization/tokenization unexamined; greedy
+  action decoding unquantified; several unstated reproducibility details; ``halves the gap''
+  imprecise.
+\end{description}
+
+\paragraph{Recommendation.} The core empirical claim---that QLoRA SFT on oracle-labeled
+trajectories yields a competent few-shot in-context decision policy that beats ICL-only and
+DPT on these synthetic suites---is adequately supported for short and moderate horizons and is
+a useful data point. The strongest, cheapest improvements would be: (1) a richer task family
+plus a no-context fine-tuned baseline to nail down that in-context adaptation (not memorization)
+is doing the work; (2) a range-normalized regret metric with a hierarchical variance estimate
+and at least three fine-tuning seeds per point; (3) an explicit $\Ktest$/$K$ scaling experiment
+on the LLM to connect to Prop.\ 2; and (4) softened theory framing. With those, the contribution
+would be both more defensible and more informative.
+
+\end{document}
