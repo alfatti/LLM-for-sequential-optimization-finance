@@ -1,0 +1,57 @@
+{
+  "data_dir": "data_smoke",
+  "A_roundtrip": {
+    "n_demo_actions": 30
+  },
+  "B_mask_spans": {
+    "n_decision_spans": 10
+  },
+  "C_ce_gap": {
+    "mc_vs_analytic_rel_err": 2.5550226742566164e-05,
+    "flatness_example_logce_gap_at_err_0.10": 0.0004000000000000001
+  },
+  "D_bayes_closed_form_max_abs_err": 8.207112767166791e-11,
+  "E_transition_info_ratio": 0.0010000000000000002,
+  "F_slopes": {
+    "bayes": -0.9429616074537934,
+    "sample_mean": -0.9962714099291259,
+    "mse_bayes": [
+      0.0050180641958585855,
+      0.0031338641645555416,
+      0.001618774663062521,
+      0.0007769877339493129,
+      0.00038376960282124806
+    ],
+    "mse_sample": [
+      0.005984142651841867,
+      0.003188799511085902,
+      0.0016189755937190355,
+      0.0007769877342821989,
+      0.00038376960282124806
+    ],
+    "ktest": [
+      1,
+      2,
+      4,
+      8,
+      16
+    ]
+  },
+  "G_corpus_proxy": {
+    "G1_actual_corpus_pooled_tier1_rmse": 0.035735961209724394,
+    "G1_n_examples": 14,
+    "G1_corpus_used": "ntask_00008",
+    "G2_tier1_rmse_proxy": 0.03292965134002366,
+    "G2_tier1_rmse_bayes": 0.032377138262710534,
+    "G2_tier2_beta_proxy_kmin": 0.9388234644827081,
+    "G2_tier2_beta_bayes_kmin": 0.6229215066432742,
+    "G2_ktest_used": 4,
+    "G2_n_synth": 3000
+  },
+  "H_bundles": {
+    "q4": 54,
+    "q2": 18,
+    "q1": 6,
+    "q1_probe": 2
+  }
+}
