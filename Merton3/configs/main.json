@@ -1,0 +1,77 @@
+{
+  "market": {
+    "r": 0.02,
+    "sigma": 0.2,
+    "gamma": 2.0,
+    "dt": 0.1,
+    "n_steps": 10
+  },
+  "prior": {
+    "lo": 0.3,
+    "hi": 0.8
+  },
+  "grid": {
+    "lo": -0.6,
+    "hi": 1.2,
+    "step": 0.01
+  },
+  "data": {
+    "sigma_label": 0.25,
+    "n_support_min": 1,
+    "n_support_max": 16,
+    "examples_per_task": 4,
+    "ntask_sweep": [
+      100,
+      400,
+      1600,
+      3200
+    ],
+    "val_task_frac": 0.1
+  },
+  "eval": {
+    "ktest_sweep": [
+      1,
+      2,
+      4,
+      8,
+      16
+    ],
+    "tier23_ktests": [
+      2,
+      8
+    ],
+    "n_tier1": 100,
+    "n_tier2_low": 50,
+    "n_tier2_high": 50,
+    "n_tier3": 40,
+    "tier2_low_range": [
+      0.05,
+      0.29
+    ],
+    "tier2_high_range": [
+      0.81,
+      1.0
+    ],
+    "tier3_range": [
+      -0.5,
+      -0.125
+    ],
+    "n_query_paths": 1
+  },
+  "fixed": {
+    "pistar": 0.55,
+    "n_train_rollouts": 512,
+    "sigma_label_q1": 0.25,
+    "reveal_params": false,
+    "n_eval_paths": 50,
+    "probe_t": 6,
+    "probe_x_lo": -0.3,
+    "probe_x_hi": 0.3,
+    "probe_n_x": 13,
+    "probe_n_histories": 3
+  },
+  "q2": {
+    "n_context_draws": 50
+  },
+  "seed": 20260702
+}
