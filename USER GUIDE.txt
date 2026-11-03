@@ -1,0 +1,193 @@
+GEMMA 4 CHAT-QUOTE EXTRACTOR  -  USER GUIDE
+===========================================
+
+What this package does
+----------------------
+It teaches Google's Gemma 4 (E4B) model to read one Bloomberg chat line and
+return the quote inside it as structured JSON, using your labelled examples.
+Everything runs on your Mac; nothing is uploaded anywhere.
+
+   your labels file -> prepared data -> training (1-5 h) -> score card -> usable model
+
+You type commands into the Terminal app. Each command below is on its own
+line starting with  $  - do not type the $. Press Return after each one.
+Commands are case-sensitive; copy them exactly.
+
+
+0. WHAT YOU NEED
+----------------
+ - A Mac with an Apple chip (M1 or newer).
+ - Memory: 32 GB or more is ideal; 24 GB and 16 GB work with a smaller model
+   variant (section 2, step 4). To check: Apple menu > About This Mac.
+ - About 50 GB of free disk space (the model alone is ~16 GB).
+ - Internet for the first run (model download).
+ - Your labels file: JSON where each item has "raw_message", "labels" and
+   "source", exactly like the samples you already built.
+ - Python 3.10 or newer. Open Terminal and type:
+       $ python3 --version
+   If that errors or shows a version below 3.10, install the macOS installer
+   from https://www.python.org/downloads/ and try again.
+
+
+1. OPEN TERMINAL IN THE RIGHT FOLDER  (do this every time)
+----------------------------------------------------------
+ 1. Unzip gemma4-chat-sft.zip -> a folder named gemma4-chat-sft.
+    Keep it somewhere permanent, e.g. Documents.
+ 2. Open Terminal: Command+Space, type Terminal, Return.
+ 3. Type  cd  and a space, then DRAG the gemma4-chat-sft folder from Finder
+    into the Terminal window (its path appears), then press Return.
+       $ cd /Users/you/Documents/gemma4-chat-sft
+ 4. Switch on the package's Python environment (created in section 2):
+       $ source .venv/bin/activate
+    Your prompt now starts with (.venv). Every new Terminal window needs
+    steps 3 and 4 again.
+
+
+2. ONE-TIME SETUP  (10 minutes + model download)
+------------------------------------------------
+ 1. In the folder (section 1, steps 1-3) create the environment and install:
+       $ python3 -m venv .venv
+       $ source .venv/bin/activate
+       $ pip install -r requirements.txt
+    Lots of output; it is done when the prompt comes back.
+    A line saying "PyTorch was not found" is harmless.
+
+ 2. Make the scripts runnable:
+       $ chmod +x train.sh fuse.sh
+
+ 3. Copy your labels file into the folder and name it  labels.json
+    (a .jsonl file is fine too - just use its real name in the commands).
+
+ 4. Match the model to your memory:
+    - 32 GB or more: nothing to do.
+    - 24 GB: build an 8-bit copy once (downloads ~16 GB, then shrinks it),
+      then point the settings file at it:
+       $ mlx_lm.convert --hf-path mlx-community/gemma-4-e4b-it-bf16 -q --q-bits 8 --mlx-path models/gemma-4-e4b-it-8bit
+       $ sed -i '' 's#^model: .*#model: "models/gemma-4-e4b-it-8bit"#' configs/lora_e4b.yaml
+    - 16 GB: same two commands with  --q-bits 4  and  gemma-4-e4b-it-4bit
+      in all three places.
+    Every later step reads the settings file, so nothing else changes.
+
+
+3. RUNNING IT, STEP BY STEP
+---------------------------
+Each time: section 1 first (right folder, environment on). Then:
+
+STEP 1 - Prepare the data  (seconds)
+       $ python prepare_data.py --input labels.json --out data
+   It prints a summary. Look at:
+    - "splits" - how many examples went to training vs. the two held-out sets
+      (valid/test) the model never trains on.
+    - the field table: "non-null" = how often the field has a value;
+      "literal" = how often that value appears word-for-word in the message.
+    - "N suspicious label rows written to data/label_qa.jsonl": open that
+      file (TextEdit is fine). These are labels worth a second look, e.g. the
+      same message labelled two ways. Fix them in labels.json and re-run.
+
+STEP 2 - Pre-flight check  (seconds; downloads a few small files)
+       $ python check_setup.py
+   Must end with  ALL CHECKS PASSED.  If it says PROBLEM, the text next to it
+   says exactly what to do. Then load the full model once:
+       $ python check_setup.py --load-model
+   First time this downloads ~16 GB (10-60 min). If it stops, run it again -
+   downloads resume. It must also end with ALL CHECKS PASSED.
+
+STEP 3 - Smoke test  (2-5 minutes)
+       $ SMOKE=1 ./train.sh
+   Trains for just 8 steps to prove everything fits in memory and to show
+   your speed (tok/s). Success ends with:
+       adapter: adapters/smoke/adapters.safetensors
+   If it fails with a memory error (mentions memory, Metal, or "killed"):
+   use the smaller model (section 2, step 4) and/or add BATCH=2 in front:
+       $ SMOKE=1 BATCH=2 ./train.sh
+
+STEP 4 - The real training run  (about 1-5 hours)
+       $ caffeinate -i ./train.sh
+   caffeinate keeps the Mac awake while it runs. Keep it plugged in with the
+   lid open; light work in other apps is fine.
+   You will see a line every 10 steps with train_loss (drifts down) and, now
+   and then, a "val" line: the loss on held-out examples. That is the number
+   to watch - it should fall and then flatten out.
+   At the end it prints your trained model's folder, for example:
+       adapter: adapters/run-20261029-143012/adapters.safetensors
+   Write down that  adapters/run-DATE-TIME  name; the next steps use it.
+
+   Options you can put in front of ./train.sh (combine freely):
+       EPOCHS=3    train longer (default is 2 passes over the data)
+       BATCH=2     less memory, a little slower
+   Interrupted? Continue from the last checkpoint:
+       $ RESUME=adapters/run-DATE-TIME/adapters.safetensors caffeinate -i ./train.sh
+
+STEP 5 - Score it on the held-out test examples  (minutes)
+       $ python evaluate.py --adapter-path adapters/run-DATE-TIME
+   Reading the table:
+       exact    share of messages where EVERY field was right (the headline)
+       clean    share of outputs that were pure JSON with nothing extra
+       recall   (per field) how often a real value was found
+       spurious (per field) values invented where there were none
+       wrong    (per field) right field, wrong value
+       ground   share of values copied verbatim from the message;
+                below 100% means the model is making values up
+   It also writes adapters/run-DATE-TIME/eval/errors.jsonl: every mistake
+   with the message, the right answer and the model's answer. Read this
+   before changing anything - early problems are usually label issues.
+   To see what the untrained model scores with the same prompt (baseline):
+       $ python evaluate.py --out runs/baseline
+
+STEP 6 - Package the model for everyday use  (10-20 minutes)
+       $ QUANT=8 ./fuse.sh adapters/run-DATE-TIME
+   Creates models/bbchat-e4b (full size) and models/bbchat-e4b-8bit (half
+   the size, faster, near-identical results) and ends with a one-line test.
+   If you trained on the 8-bit/4-bit model, leave out QUANT=8 - the result is
+   already small:
+       $ ./fuse.sh adapters/run-DATE-TIME
+
+STEP 7 - Use it
+   One message:
+       $ python extract.py --model models/bbchat-e4b-8bit "13:04:52 IAN BUEHLER: GC 3mo FF+43.1 / FF+50.4"
+   A whole chat dump (plain text file, one message per line):
+       $ python extract.py --model models/bbchat-e4b-8bit --input chat_dump.txt --out parsed.jsonl
+   parsed.jsonl has one line per message:
+       "quotes"    the extracted quotes (one object per leg; [] = no quote)
+       "ok"        false means the output could not be read as JSON
+       "warnings"  values that do not appear verbatim in the message
+   (On a 16 GB Mac use the -8bit model; the full-size one may not fit.)
+
+
+4. DOING IT AGAIN WITH MORE OR BETTER LABELS
+--------------------------------------------
+Update labels.json and repeat steps 1-6. Each run gets its own
+adapters/run-DATE-TIME folder with its settings, log and scores
+(eval/metrics.json), so you can compare runs and keep the best.
+
+
+5. IF SOMETHING GOES WRONG
+--------------------------
+ "command not found" / "No module named mlx"
+    -> Wrong folder or environment off. Do section 1 again.
+ "permission denied: ./train.sh"
+    -> $ chmod +x train.sh fuse.sh
+ Out of memory (mentions memory, Metal, or the process was "killed")
+    -> Smaller model (section 2, step 4) and/or BATCH=2.
+ Download stops or shows a network error
+    -> Run the same command again; it resumes where it stopped.
+ "401" or "gated repo" while downloading
+    -> Only happens with google/gemma-4-E4B-it. The default model needs no
+       login. If you want Google's own copy: accept the licence on
+       huggingface.co, then  $ hf auth login
+ Training stopped because the Mac slept
+    -> Always start it with  caffeinate -i  and continue with RESUME= (step 4).
+ Scores are poor
+    -> Read eval/errors.jsonl first, fix labels, re-run. Then try EPOCHS=3.
+ "PyTorch was not found"
+    -> Harmless.
+
+
+6. WHERE THINGS ARE
+-------------------
+ labels.json          your labelled examples (input)
+ data/                prepared train/valid/test files + schema.json
+ adapters/run-*/      each training run: weights, settings, log, eval/
+ models/              packaged models ready to use
+ runs/                evaluations not tied to a run (e.g. baseline)
+ README.md            the technical version of this guide
